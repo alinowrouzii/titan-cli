@@ -59,6 +59,29 @@ def test_delete_session_leaves_totp(tmp_path):
     assert secret.parent.exists()
 
 
+def test_logout_leaves_vm_credentials(tmp_path, monkeypatch):
+    from titan.credentials import load_credentials, save_credentials, set_server
+
+    session = tmp_path / "session.json"
+    creds = tmp_path / "credentials.json"
+    save_session(session, {"token": "abc", "state": 1, "sessionId": "sid"})
+    save_credentials(creds, set_server(load_credentials(creds), "828-651", "mongo", "secret"))
+    monkeypatch.setattr("titan.cli.session_path", lambda: session)
+    monkeypatch.setattr("titan.cli.credentials_path", lambda: creds)
+    monkeypatch.setattr("titan.cli._saved_token", lambda: "")
+    assert main(["logout"]) == 0
+    assert not session.exists()
+    assert load_credentials(creds)["by_id"]["828-651"]["password"] == "secret"
+
+
+def test_cred_set_is_its_own_command(capsys):
+    with pytest.raises(SystemExit) as caught:
+        main(["cred", "set", "--help"])
+    assert caught.value.code == 0
+    text = capsys.readouterr().out
+    assert "save" in text.lower() or "password" in text.lower()
+
+
 def test_help_shows_install_hint(capsys):
     with pytest.raises(SystemExit) as caught:
         main(["--help"])

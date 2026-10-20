@@ -40,7 +40,9 @@ The command asks for your ef.net username and password. PAM then requires a TOTP
 - If `~/.config/titan/totp` exists, `titan` sends the current code itself.
 - If it does not, type the 6 digits from Google Authenticator.
 
-The password is not saved. The session token is written to `~/.config/titan/session.json` with mode `0600`.
+The ef.net password is not saved. The session token is written to `~/.config/titan/session.json` with mode `0600`.
+
+After login, titan asks `save VM passwords now? [y/N]`. Yes shows the server list. The same list is `titan cred set`, which works any time you are logged in.
 
 Another PAM host:
 
@@ -54,15 +56,18 @@ Certificate verification is off. `titan.efarda.ir` sends only the leaf certifica
 
 ```bash
 titan ls
+titan ssh
 titan ssh Finnotech-DB-Mongo-4
 titan ssh 828-651
 ```
+
+`titan ssh` with no name prints the server list. `*` means that server has its own saved password. Type one number to connect.
 
 `ls` prints resource name, access name, IP, and access id.
 
 `ssh` matches the access id exactly, or the access name or resource name with case ignored. Zero matches stops. More than one match prints the rows and does not connect. Pass the access id when two rows share a name.
 
-The PAM proxy then asks for the VM username and password. Ctrl-C goes to that remote shell. Leave with `exit`. If the prompt never returns, stop the process from another terminal:
+The PAM proxy then asks for the VM username and password. If that server has a saved password, or a default password is set, titan types them when it sees `login:` / `username:` and then `Password:`. Otherwise you type them. Ctrl-C goes to that remote shell. Leave with `exit`. If the prompt never returns, stop the process from another terminal:
 
 ```bash
 pkill -f "titan ssh"
@@ -98,13 +103,29 @@ Remove only the secret:
 titan totp delete
 ```
 
+## VM passwords
+
+```bash
+titan cred set
+titan cred default
+titan cred delete
+```
+
+`titan cred set` prints every server. `*` means that row already has its own password. `0` is the default username and password, used for every server that has no own password. Type numbers such as `1,3` or `0`.
+
+`titan cred default` sets only that default.
+
+`titan cred delete` uses the same list and removes the rows you pick.
+
+Passwords are written to `~/.config/titan/credentials.json` with mode `0600`. `titan logout` does not delete this file.
+
 ## Logout
 
 ```bash
 titan logout
 ```
 
-This tells PAM to drop the session and deletes `~/.config/titan/session.json`. The TOTP secret stays. The next `titan login` still sends the code when that file is present.
+This tells PAM to drop the session and deletes `~/.config/titan/session.json`. The TOTP secret stays. VM passwords stay. The next `titan login` still sends the code when the TOTP file is present, and `titan ssh` still uses saved VM passwords.
 
 ## Files
 
@@ -112,4 +133,5 @@ This tells PAM to drop the session and deletes `~/.config/titan/session.json`. T
 | --- | --- |
 | `~/.config/titan/session.json` | PAM token. Removed by `titan logout`. |
 | `~/.config/titan/totp` | TOTP secret. Removed by `titan totp delete`. |
+| `~/.config/titan/credentials.json` | VM usernames and passwords. Not removed by `titan logout`. Removed only by `titan cred delete`. |
 | `~/.cache/titan/qrscan` | Mac QR scanner binary. No secret. |

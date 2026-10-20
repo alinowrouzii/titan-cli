@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import os
+import re
 import select
 import sys
 import termios
 import threading
 import tty
+from typing import List, Optional
 from urllib.parse import urlencode, urlparse
+
+_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_USER_PROMPT = re.compile(
+    r"(?i)(?:(?:^|[\r\n])(?:login(?:\s+as)?|user\s*name|user)|username)\s*:\s*"
+)
+_PASS_PROMPT = re.compile(r"(?i)password\s*:\s*$")
+_AUTOFILL_SECONDS = 15.0
 
 
 def ssh_proxy_url(
@@ -42,7 +51,46 @@ def terminal_size() -> tuple:
     return (size.columns, size.lines)
 
 
-def run_shell(url: str, origin: str) -> None:
+class LoginFeeder:
+    """Type a saved VM username and password when those prompts appear."""
+
+    def __init__(self, username: str, password: str) -> None:
+        self.username = username
+        self.password = password
+        self.done = False
+        self._stage = "user"
+        self._buf = ""
+
+    def cancel(self) -> None:
+        self.done = True
+        self._stage = "done"
+
+    def feed(self, text: str) -> List[str]:
+        if self.done:
+            return []
+        self._buf = (self._buf + _visible(text))[-400:]
+        out: List[str] = []
+        if self._stage == "user":
+            match = _USER_PROMPT.search(self._buf)
+            if match:
+                out.append(self.username + "\r")
+                self._stage = "password"
+                self._buf = self._buf[match.end() :]
+        if self._stage == "password":
+            match = _PASS_PROMPT.search(self._buf)
+            if match:
+                out.append(self.password + "\r")
+                self._stage = "done"
+                self.done = True
+                self._buf = ""
+        return out
+
+
+def _visible(text: str) -> str:
+    return _ANSI.sub("", text).replace("\x1b", "")
+
+
+def run_shell(url: str, origin: str, credential: Optional[dict] = None) -> None:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise RuntimeError("titan ssh needs a terminal")
     fd = sys.stdin.fileno()
@@ -50,19 +98,23 @@ def run_shell(url: str, origin: str) -> None:
     error = None
     try:
         tty.setraw(fd)
-        error = _bridge(url, origin, fd)
+        error = _bridge(url, origin, fd, credential)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
     if error is not None:
         raise RuntimeError(error)
 
 
-def _bridge(url: str, origin: str, fd: int):
+def _bridge(url: str, origin: str, fd: int, credential: Optional[dict] = None):
     from websockets.sync.client import connect
 
     from titan.tls import unverified_context
 
     stop = threading.Event()
+    feeder = None
+    if credential:
+        feeder = LoginFeeder(credential["username"], credential["password"])
+    send_lock = threading.Lock()
     try:
         with connect(
             url,
@@ -75,25 +127,55 @@ def _bridge(url: str, origin: str, fd: int):
                 try:
                     for message in ws:
                         if isinstance(message, str):
-                            os.write(sys.stdout.fileno(), message.encode("utf-8"))
+                            raw = message.encode("utf-8")
                         else:
-                            os.write(sys.stdout.fileno(), message)
+                            raw = message
+                        os.write(sys.stdout.fileno(), raw)
+                        if feeder is None:
+                            continue
+                        with send_lock:
+                            replies = feeder.feed(raw.decode("utf-8", "replace"))
+                        for reply in replies:
+                            ws.send(reply)
                 finally:
                     stop.set()
 
             thread = threading.Thread(target=reader, daemon=True)
             thread.start()
-            while not stop.is_set():
-                ready, _, _ = select.select([fd], [], [], 0.2)
-                if fd not in ready:
-                    continue
-                data = os.read(fd, 1024)
-                if not data:
-                    break
-                try:
-                    ws.send(data.decode("utf-8"))
-                except UnicodeDecodeError:
-                    ws.send(data)
+            timer = None
+            if feeder is not None:
+                timer = threading.Timer(
+                    _AUTOFILL_SECONDS,
+                    _cancel_feeder,
+                    args=(send_lock, feeder),
+                )
+                timer.daemon = True
+                timer.start()
+            try:
+                while not stop.is_set():
+                    ready, _, _ = select.select([fd], [], [], 0.2)
+                    if fd not in ready:
+                        continue
+                    data = os.read(fd, 1024)
+                    if not data:
+                        break
+                    if feeder is not None:
+                        with send_lock:
+                            feeder.cancel()
+                        if timer is not None:
+                            timer.cancel()
+                    try:
+                        ws.send(data.decode("utf-8"))
+                    except UnicodeDecodeError:
+                        ws.send(data)
+            finally:
+                if timer is not None:
+                    timer.cancel()
     except Exception as exc:
         return str(exc)
     return None
+
+
+def _cancel_feeder(lock: threading.Lock, feeder: LoginFeeder) -> None:
+    with lock:
+        feeder.cancel()
