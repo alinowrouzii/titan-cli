@@ -84,7 +84,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cred_sub.add_parser("default", help="Save one VM username and password for every server")
     cred_sub.add_parser("delete", help="Delete saved VM passwords")
     ssh = sub.add_parser("ssh")
-    ssh.add_argument("target", nargs="?", help="access id or name. omit to pick from the list")
+    ssh.add_argument(
+        "target",
+        nargs="?",
+        help="server number, access id, or name. omit to pick from the list",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
         if args.cmd == "login":
@@ -254,6 +258,15 @@ def cmd_ssh(target: Optional[str]) -> int:
         print(format_menu(rows, store, include_default=False))
         print("type one server number")
         number = parse_one_server(input("server: "), len(rows))
+        return _open_shell(rows[number - 1])
+    if target.isdigit():
+        number = int(target)
+        if number < 1 or number > len(rows):
+            print(
+                "server %s is outside 1-%d" % (target, len(rows)),
+                file=sys.stderr,
+            )
+            return 1
         return _open_shell(rows[number - 1])
     hits = resolve(rows, target)
     if not hits:

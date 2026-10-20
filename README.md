@@ -57,11 +57,14 @@ Certificate verification is off. `titan.efarda.ir` sends only the leaf certifica
 ```bash
 titan ls
 titan ssh
+titan ssh 7
 titan ssh Finnotech-DB-Mongo-4
 titan ssh 828-651
 ```
 
 `titan ssh` with no name prints the server list. `*` means that server has its own saved password. Type one number to connect.
+
+`titan ssh 7` opens that same list row. Numbers start at 1. A number past the list stops. A bare number is always a list row, so an access id that is only digits is reached by its name.
 
 `ls` prints resource name, access name, IP, and access id.
 
