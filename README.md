@@ -78,6 +78,29 @@ pkill -f "titan ssh"
 
 `error: connect EHOSTUNREACH <ip>:22` means the PAM server cannot route to that VM. The same Connect button in the browser fails the same way.
 
+## TCP ports
+
+The VM is still not reachable as an SSH server. These flags ride the same websocket and publish TCP. The VM needs `python3` and `base64`. There is no shell in this mode.
+
+```bash
+titan ssh 7 -L 27017:27017 -R 9000:3000
+```
+
+| Flag | What listens | What gets dialed |
+| --- | --- | --- |
+| `-L LOCAL:REMOTE` | your laptop `127.0.0.1:LOCAL` | the VM `127.0.0.1:REMOTE` |
+| `-R REMOTE:LOCAL` | the VM `127.0.0.1:REMOTE` | your laptop `127.0.0.1:LOCAL` |
+
+Repeat either flag. The list is numbered in the order you wrote the flags. Both ends stay on `127.0.0.1`.
+
+```text
+1  L  laptop 127.0.0.1:27017  dial vm 127.0.0.1:27017  conns 0
+2  R  vm 127.0.0.1:9000  dial laptop 127.0.0.1:3000  conns 1
+type a number to kill that tunnel
+```
+
+Type a number and Enter to close that listen and its connections. Ctrl-C closes every tunnel and returns the terminal. A saved VM password is typed for you. Without one, you log in at the VM prompt, then the list replaces the shell.
+
 ## TOTP secret
 
 Save the Google Authenticator export QR so later logins do not ask for the code. On the phone: Transfer accounts, Export accounts. Screenshot the QR.

@@ -43,9 +43,19 @@ from titan.pam import (
 from titan.migration import accounts_in_text, choose_account, secret_base32
 from titan.qrscan import read_qr_payload
 from titan.totp import load_totp, save_totp, totp_candidates
+from titan.forward import parse_port_pair, run_forward
 from titan.shell import run_shell, ssh_proxy_url, terminal_size
 
 PAGE = 100
+
+
+class _RememberForward(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        found = getattr(namespace, self.dest)
+        if found is None:
+            found = []
+            setattr(namespace, self.dest, found)
+        found.append((option_string, values))
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -89,6 +99,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         nargs="?",
         help="server number, access id, or name. omit to pick from the list",
     )
+    ssh.add_argument(
+        "-L",
+        action=_RememberForward,
+        dest="forwards",
+        default=None,
+        metavar="LOCAL:REMOTE",
+        help="listen on the laptop, dial that port on the VM",
+    )
+    ssh.add_argument(
+        "-R",
+        action=_RememberForward,
+        dest="forwards",
+        metavar="REMOTE:LOCAL",
+        help="listen on the VM, dial that port on the laptop",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
         if args.cmd == "login":
@@ -107,7 +132,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if args.cred_cmd == "delete":
                 return cmd_cred_delete()
             return cmd_cred_set()
-        return cmd_ssh(args.target)
+        return cmd_ssh(args.target, args.forwards or [])
     except SessionExpired as exc:
         print(exc, file=sys.stderr)
         return 1
@@ -251,14 +276,18 @@ def cmd_ls() -> int:
     return 0
 
 
-def cmd_ssh(target: Optional[str]) -> int:
+def cmd_ssh(target: Optional[str], forwards: Sequence[tuple]) -> int:
+    specs, err = _parse_forwards(forwards)
+    if err:
+        print(err, file=sys.stderr)
+        return 2
     rows = _load_accesses()
     if not target:
         store = load_credentials(credentials_path())
         print(format_menu(rows, store, include_default=False))
         print("type one server number")
         number = parse_one_server(input("server: "), len(rows))
-        return _open_shell(rows[number - 1])
+        return _open(rows[number - 1], specs)
     if target.isdigit():
         number = int(target)
         if number < 1 or number > len(rows):
@@ -267,7 +296,7 @@ def cmd_ssh(target: Optional[str]) -> int:
                 file=sys.stderr,
             )
             return 1
-        return _open_shell(rows[number - 1])
+        return _open(rows[number - 1], specs)
     hits = resolve(rows, target)
     if not hits:
         print("no access matches %s" % target, file=sys.stderr)
@@ -277,7 +306,24 @@ def cmd_ssh(target: Optional[str]) -> int:
         for access in hits:
             print(format_row(access), file=sys.stderr)
         return 1
-    return _open_shell(hits[0])
+    return _open(hits[0], specs)
+
+
+def _parse_forwards(forwards: Sequence[tuple]):
+    specs = []
+    for flag, text in forwards:
+        try:
+            first, second = parse_port_pair(text)
+        except ValueError:
+            return None, "bad forward spec: %s %s" % (flag, text)
+        specs.append(("L" if flag == "-L" else "R", first, second))
+    return specs, ""
+
+
+def _open(access: Access, specs: List[tuple]) -> int:
+    if specs:
+        return _open_forward(access, specs)
+    return _open_shell(access)
 
 
 def _open_shell(access: Access) -> int:
@@ -294,6 +340,26 @@ def _open_shell(access: Access) -> int:
     )
     run_shell(url, host, credential_for(load_credentials(credentials_path()), access.id))
     return 0
+
+
+def _open_forward(access: Access, specs: List[tuple]) -> int:
+    token = _token()
+    cols, rows_n = terminal_size()
+    host = base_url()
+    url = ssh_proxy_url(
+        host,
+        token,
+        access.id,
+        cols,
+        rows_n,
+        uuid.uuid4().hex,
+    )
+    return run_forward(
+        url,
+        host,
+        credential_for(load_credentials(credentials_path()), access.id),
+        specs,
+    )
 
 
 def cmd_cred_set() -> int:
