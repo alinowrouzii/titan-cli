@@ -286,7 +286,12 @@ def cmd_ssh(target: Optional[str], forwards: Sequence[tuple]) -> int:
         store = load_credentials(credentials_path())
         print(format_menu(rows, store, include_default=False))
         print("type one server number")
-        number = parse_one_server(input("server: "), len(rows))
+        try:
+            typed = input("server: ")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 130
+        number = parse_one_server(typed, len(rows))
         return _open(rows[number - 1], specs)
     if target.isdigit():
         number = int(target)

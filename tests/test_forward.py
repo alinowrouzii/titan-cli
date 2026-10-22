@@ -29,9 +29,12 @@ from titan.forward import (
     chunk_script,
     decode_frames,
     encode_frame,
+    REMOTE_SOURCE,
     load_remote,
     parse_port_pair,
     run_forward,
+    unwrap_wire,
+    wire_line,
 )
 
 
@@ -72,9 +75,16 @@ def _read_frames(sock, count, timeout=2):
         if not chunk:
             break
         buf += chunk
-        frames, buf = decode_frames(buf)
-        found.extend(frames)
+        raws, buf = unwrap_wire(buf)
+        for raw in raws:
+            frames, rest = decode_frames(raw)
+            assert rest == b""
+            found.extend(frames)
     return found
+
+
+def _send_frame(sock, frame_type, payload):
+    sock.sendall(wire_line(encode_frame(frame_type, payload)))
 
 
 def test_parse_port_pair_accepts_bounds():
@@ -97,6 +107,25 @@ def test_frame_round_trip_keeps_nul_and_partial_tail():
     frames, rest = decode_frames(frame[:3])
     assert frames == []
     assert rest == frame[:3]
+
+
+def test_remote_source_reads_with_os_read():
+    assert "os.read(infd, n)" in REMOTE_SOURCE
+    assert "stdin.buffer.read" not in REMOTE_SOURCE
+
+
+def test_wire_line_for_port_8585_is_ascii():
+    raw = encode_frame(BIND, struct.pack(">IBH", 1, KIND_L, 8585))
+    line = wire_line(raw)
+    assert b"\x00" not in line
+    assert line.endswith(b"\r")
+    assert all(byte == 13 or 32 <= byte < 127 for byte in line)
+    assert line.decode("ascii")
+    frames, rest = unwrap_wire(line[:8])
+    assert frames == []
+    frames, rest = unwrap_wire(rest + line[8:])
+    assert frames == [raw]
+    assert rest == b""
 
 
 def test_decode_rejects_bad_lengths():
@@ -185,7 +214,7 @@ def test_bootstrap_hello_and_timeouts():
     sent = boot.take()
     assert b"TITAN_EXEC" in sent
     assert boot.phase == "hello"
-    boot.push(HELLO_FRAME + b"left")
+    boot.push(wire_line(HELLO_FRAME) + b"left")
     assert boot.phase == "done"
     assert boot.rest == b"left"
 
@@ -336,15 +365,15 @@ def test_remote_dials_and_drop_closes_listen():
     try:
         hello = _read_frames(left, 1)[0]
         assert hello == (HELLO, b"1")
-        left.sendall(encode_frame(BIND, struct.pack(">IBH", 1, KIND_L, port)))
+        _send_frame(left, BIND, struct.pack(">IBH", 1, KIND_L, port))
         bound = _read_frames(left, 1)[0]
         assert bound[0] == BOUND
-        left.sendall(encode_frame(OPEN, struct.pack(">II", 1, 1)))
+        _send_frame(left, OPEN, struct.pack(">II", 1, 1))
         opened = _read_frames(left, 1)[0]
         assert opened[0] == OPENED
         conn, _addr = service.accept()
         try:
-            left.sendall(encode_frame(DATA, struct.pack(">I", 1) + b"ab"))
+            _send_frame(left, DATA, struct.pack(">I", 1) + b"ab")
             conn.settimeout(2)
             assert conn.recv(8) == b"ab"
             conn.sendall(b"AB")
@@ -355,9 +384,9 @@ def test_remote_dials_and_drop_closes_listen():
             conn.close()
         assert _read_frames(left, 1)[0][0] == CLOSE
         listen_port = _free_port()
-        left.sendall(encode_frame(BIND, struct.pack(">IBH", 2, KIND_R, listen_port)))
+        _send_frame(left, BIND, struct.pack(">IBH", 2, KIND_R, listen_port))
         assert _read_frames(left, 1)[0][0] == BOUND
-        left.sendall(encode_frame(DROP, struct.pack(">I", 2)))
+        _send_frame(left, DROP, struct.pack(">I", 2))
         time.sleep(0.3)
         with pytest.raises(OSError):
             socket.create_connection(("127.0.0.1", listen_port), timeout=0.5)

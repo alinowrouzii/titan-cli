@@ -39,6 +39,23 @@ def test_ssh_number_out_of_range(monkeypatch, capsys):
     assert "3" in err
 
 
+def test_ssh_menu_cancel_is_quiet(monkeypatch):
+    monkeypatch.setattr("titan.cli._load_accesses", _rows)
+    monkeypatch.setattr("titan.cli.load_credentials", lambda _path: {"default": None, "by_id": {}})
+
+    def eof(_prompt):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", eof)
+    assert main(["ssh"]) == 130
+
+    def interrupt(_prompt):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", interrupt)
+    assert main(["ssh"]) == 130
+
+
 def test_ssh_name_still_resolves(monkeypatch):
     rows = _rows()
     opened = []

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import os
 import queue
 import re
@@ -125,11 +126,56 @@ def remote_tool_error(visible: str) -> str:
     return ""
 
 
+def wire_line(frame: bytes) -> bytes:
+    # The PAM proxy delivers client text to the PTY the same way as a key.
+    # Shell lines end with CR. A bare LF never reaches the VM program.
+    return b"TITAN1 " + base64.b64encode(frame) + b"\r"
+
+
+def unwrap_wire(buffer: bytes) -> Tuple[List[bytes], bytes]:
+    frames: List[bytes] = []
+    while buffer:
+        cut = None
+        for index, byte in enumerate(buffer):
+            if byte in (10, 13):
+                cut = index
+                break
+        if cut is None:
+            break
+        line = buffer[:cut]
+        drop = 2 if buffer[cut : cut + 2] == b"\r\n" else 1
+        buffer = buffer[cut + drop :]
+        if not line.startswith(b"TITAN1 "):
+            continue
+        try:
+            raw = base64.b64decode(line[7:], validate=True)
+        except Exception as exc:
+            raise ValueError("bad frame") from exc
+        got, rest = decode_frames(raw)
+        if rest or len(got) != 1:
+            raise ValueError("bad frame")
+        frames.append(raw)
+    return frames, buffer
+
+
 def after_hello(buffer: bytes) -> Optional[bytes]:
-    index = buffer.find(HELLO_FRAME)
-    if index < 0:
-        return None
-    return buffer[index + len(HELLO_FRAME) :]
+    token = b"TITAN1 " + base64.b64encode(HELLO_FRAME)
+    start = 0
+    while True:
+        index = buffer.find(token, start)
+        if index < 0:
+            return None
+        after = index + len(token)
+        if after >= len(buffer):
+            return None
+        if buffer[after : after + 1] not in (b"\r", b"\n"):
+            start = index + 1
+            continue
+        if buffer[after : after + 2] == b"\r\n":
+            after += 2
+        else:
+            after += 1
+        return buffer[after:]
 
 
 def _pack_err(ident: int, text: str) -> bytes:
@@ -612,6 +658,7 @@ def paint(stream, previous: int, text: str) -> int:
 
 
 REMOTE_SOURCE = r'''
+import base64
 import os
 import select
 import socket
@@ -689,7 +736,8 @@ class Fwd(object):
         self.alive = True
 
     def send(self, ftype, payload):
-        self.write(enc(ftype, payload))
+        raw = enc(ftype, payload)
+        self.write(b"TITAN1 " + base64.b64encode(raw) + b"\n")
         self.flush()
 
     def serve(self):
@@ -721,7 +769,7 @@ class Fwd(object):
                 self.alive = False
                 return
             self.buf += chunk
-            frames, self.buf = dec(self.buf)
+            frames = self.pull_frames()
             for ftype, payload in frames:
                 self.frame(ftype, payload)
         for tid, sock in list(self.listeners.items()):
@@ -732,6 +780,28 @@ class Fwd(object):
                 self.read_sock(chan, sock)
             if sock in ready_w:
                 self.write_sock(chan, sock)
+
+    def pull_frames(self):
+        frames = []
+        while self.buf:
+            cut = None
+            for index, byte in enumerate(self.buf):
+                if byte in (10, 13):
+                    cut = index
+                    break
+            if cut is None:
+                break
+            line = self.buf[:cut]
+            drop = 2 if self.buf[cut : cut + 2] == b"\r\n" else 1
+            self.buf = self.buf[cut + drop :]
+            if not line.startswith(b"TITAN1 "):
+                continue
+            raw = base64.b64decode(line[7:])
+            got, rest = dec(raw)
+            if rest:
+                raise ValueError("bad frame")
+            frames.extend(got)
+        return frames
 
     def frame(self, ftype, payload):
         if ftype == BIND and len(payload) >= 7:
@@ -877,7 +947,21 @@ class Fwd(object):
 
 
 def main():
-    fwd = Fwd(sys.stdin.buffer.read, sys.stdout.buffer.write, sys.stdin.buffer.fileno(), sys.stdout.buffer.flush)
+    # BufferedReader.read(n) keeps reading until n bytes. On this PTY that
+    # blocks forever after the first short line, so BIND never gets parsed.
+    infd = sys.stdin.fileno()
+    outfd = sys.stdout.fileno()
+
+    def read(n):
+        return os.read(infd, n)
+
+    def write(data):
+        view = data
+        while view:
+            sent = os.write(outfd, view)
+            view = view[sent:]
+
+    fwd = Fwd(read, write, infd, lambda: None)
     fwd.serve()
 
 
@@ -905,6 +989,27 @@ def _ws_send(ws, data: bytes) -> None:
         ws.send(data.decode("utf-8"))
     except UnicodeDecodeError:
         ws.send(data)
+
+
+def _send_wire(ws, blob: bytes) -> None:
+    if not blob:
+        return
+    frames, rest = decode_frames(blob)
+    if rest:
+        raise RuntimeError("bad frame")
+    for frame_type, payload in frames:
+        ws.send(wire_line(encode_frame(frame_type, payload)).decode("ascii"))
+
+
+def _feed_link(link: Link, pending: bytes, data: bytes) -> bytes:
+    pending += data
+    try:
+        raws, pending = unwrap_wire(pending)
+    except ValueError as exc:
+        raise RuntimeError("bad frame") from exc
+    for raw in raws:
+        link.push(raw)
+    return pending
 
 
 def _fail_text(exc: BaseException) -> str:
@@ -958,6 +1063,8 @@ def run_forward(url: str, origin: str, credential: Optional[dict], specs) -> int
                 open_timeout=20,
             ) as ws:
                 return _session(ws, fd, old, credential, specs)
+        except KeyboardInterrupt:
+            return 0
         except RuntimeError:
             raise
         except Exception as exc:
@@ -1005,7 +1112,7 @@ def _session(ws, fd: int, old, credential: Optional[dict], specs) -> int:
             if stop["hit"]:
                 if link is not None:
                     link.drop_all()
-                    _ws_send(ws, link.take_send())
+                    _send_wire(ws, link.take_send())
                 return 0
             if link is None:
                 show = credential is None and boot.phase in ("login", "prompt")
@@ -1031,10 +1138,9 @@ def _session(ws, fd: int, old, credential: Optional[dict], specs) -> int:
                     termios.tcsetattr(fd, termios.TCSADRAIN, old)
                     raw = False
                 link = Link(list(specs))
+                wire_buf = _feed_link(link, b"", boot.rest)
                 link.start()
-                if boot.rest:
-                    link.push(boot.rest)
-                _ws_send(ws, link.take_send())
+                _send_wire(ws, link.take_send())
                 shown = link.table.render()
                 painted = paint(sys.stdout, 0, shown)
                 if link.all_failed():
@@ -1048,16 +1154,16 @@ def _session(ws, fd: int, old, credential: Optional[dict], specs) -> int:
                 note = link.kill(message)
                 if note:
                     print(note, file=sys.stderr)
-            _ws_send(ws, link.take_send())
-            try:
-                item = incoming.get_nowait()
-            except queue.Empty:
-                item = None
-            if isinstance(item, BaseException):
-                raise RuntimeError(_fail_text(item))
-            if item:
-                link.push(_as_bytes(item))
-                _ws_send(ws, link.take_send())
+            _send_wire(ws, link.take_send())
+            while True:
+                try:
+                    item = incoming.get_nowait()
+                except queue.Empty:
+                    break
+                if isinstance(item, BaseException):
+                    raise RuntimeError(_fail_text(item))
+                wire_buf = _feed_link(link, wire_buf, _as_bytes(item))
+                _send_wire(ws, link.take_send())
             block = link.table.render()
             if block != shown:
                 painted = paint(sys.stdout, painted, block)
