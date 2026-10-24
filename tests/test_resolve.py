@@ -34,6 +34,42 @@ def test_resolve_many_and_none():
     assert resolve(rows, "missing") == []
 
 
+def test_resolve_exact_ip():
+    rows = [_access("id-1", "web", "vm-a", "192.168.105.226")]
+    assert resolve(rows, "192.168.105.226") == rows
+
+
+def test_resolve_ip_tail_octets():
+    rows = [_access("id-1", "web", "vm-a", "192.168.105.226")]
+    assert resolve(rows, "105.226") == rows
+    assert resolve(rows, "168.105.226") == rows
+
+
+def test_resolve_ip_tail_rejects_partial_octet_and_prefix():
+    rows = [_access("id-1", "web", "vm-a", "192.168.105.226")]
+    assert resolve(rows, "5.226") == []
+    assert resolve(rows, "192.168") == []
+    assert resolve(rows, "105.") == []
+
+
+def test_resolve_shared_ip_tail_returns_both():
+    rows = [
+        _access("id-1", "web", "vm-a", "192.168.105.226"),
+        _access("id-2", "db", "vm-b", "10.1.105.226"),
+    ]
+    assert resolve(rows, "105.226") == rows
+
+
+def test_resolve_name_and_ip_count_row_once():
+    rows = [_access("id-1", "192.168.105.226", "vm-a", "192.168.105.226")]
+    assert resolve(rows, "192.168.105.226") == rows
+
+
+def test_resolve_blank_ip_ignores_tail():
+    rows = [_access("id-1", "web", "vm-a", "")]
+    assert resolve(rows, "105.226") == []
+
+
 def test_list_body_filters_ssh_servers():
     body = encode_list_ssh(0, 100)
     assert b"getSelfAllowedAccess" in body

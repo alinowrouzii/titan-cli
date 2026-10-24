@@ -63,3 +63,17 @@ def test_ssh_name_still_resolves(monkeypatch):
     monkeypatch.setattr("titan.cli._open_shell", lambda access: opened.append(access) or 0)
     assert main(["ssh", "vm-b"]) == 0
     assert opened == [rows[1]]
+
+
+def test_ssh_ip_opens_that_server(monkeypatch):
+    rows = [
+        Access("id-1", "web", "vm-a", "192.168.105.226"),
+        Access("id-2", "db", "vm-b", "10.1.105.10"),
+    ]
+    opened = []
+    monkeypatch.setattr("titan.cli._load_accesses", lambda: rows)
+    monkeypatch.setattr("titan.cli._open_shell", lambda access: opened.append(access) or 0)
+    assert main(["ssh", "192.168.105.226"]) == 0
+    assert opened == [rows[0]]
+    assert main(["ssh", "105.226"]) == 0
+    assert opened == [rows[0], rows[0]]

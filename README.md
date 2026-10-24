@@ -60,6 +60,8 @@ titan ssh
 titan ssh 7
 titan ssh Finnotech-DB-Mongo-4
 titan ssh 828-651
+titan ssh 192.168.105.226
+titan ssh 105.226
 ```
 
 `titan ssh` with no name prints the server list. `*` means that server has its own saved password. Type one number to connect.
@@ -68,7 +70,7 @@ titan ssh 828-651
 
 `ls` prints resource name, access name, IP, and access id.
 
-`ssh` matches the access id exactly, or the access name or resource name with case ignored. Zero matches stops. More than one match prints the rows and does not connect. Pass the access id when two rows share a name.
+`ssh` matches the access id exactly, or the access name or resource name with case ignored. It also matches the IP, or a tail of its octets: `105.226` matches `192.168.105.226`. `5.226` does not, and `192.168` does not. Zero matches stops. More than one match prints the rows and does not connect. Pass the access id when two rows share a name or an IP tail.
 
 The PAM proxy then asks for the VM username and password. If that server has a saved password, or a default password is set, titan types them when it sees `login:` / `username:` and then `Password:`. Otherwise you type them. Ctrl-C goes to that remote shell. Leave with `exit`. If the prompt never returns, stop the process from another terminal:
 
