@@ -26,3 +26,7 @@ def session_path() -> Path:
 
 def totp_path() -> Path:
     return Path.home() / ".config" / "titan" / "totp"
+
+
+def credentials_path() -> Path:
+    return Path.home() / ".config" / "titan" / "credentials.json"

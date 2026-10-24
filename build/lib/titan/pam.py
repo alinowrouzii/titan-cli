@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import socket
 import urllib.error
 import urllib.request
 from typing import List, Optional, Tuple
+from urllib.parse import urlparse
 
 from titan.accesses import Access
 from titan.auth import LdapProvider
@@ -66,6 +68,44 @@ def post_thrift(
             raise SessionExpired("session dead. run titan login")
         detail = exc.read()[:200]
         raise PamError("HTTP %s: %r" % (exc.code, detail)) from exc
+    except urllib.error.URLError as exc:
+        raise PamError(_reach_line(url, exc)) from exc
+    except OSError as exc:
+        raise PamError(_reach_line(url, exc)) from exc
+
+
+def _reach_line(url: str, exc: BaseException) -> str:
+    host = urlparse(url).hostname or url
+    return "cannot reach %s: %s" % (host, _network_reason(exc))
+
+
+def _network_reason(exc: BaseException) -> str:
+    reason = getattr(exc, "reason", None)
+    if isinstance(exc, urllib.error.URLError) and reason is not None:
+        exc = reason
+    if isinstance(exc, socket.gaierror):
+        return "name not found"
+    text = getattr(exc, "strerror", None) or str(exc)
+    text = " ".join(str(text).split()).lower()
+    if not text:
+        return "network error"
+    if (
+        "nodename" in text
+        or "name or service not known" in text
+        or "name resolution" in text
+    ):
+        return "name not found"
+    if "timed out" in text:
+        return "timed out"
+    if "connection refused" in text:
+        return "connection refused"
+    if "network is unreachable" in text or "no route to host" in text:
+        return "network unreachable"
+    if "connection reset" in text:
+        return "connection reset"
+    if "certificate" in text or "ssl" in text:
+        return "tls failed"
+    return text
 
 
 def encode_logout() -> bytes:

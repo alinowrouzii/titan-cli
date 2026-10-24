@@ -31,6 +31,7 @@ from titan.forward import (
     encode_frame,
     REMOTE_SOURCE,
     load_remote,
+    parse_local_forward,
     parse_port_pair,
     run_forward,
     unwrap_wire,
@@ -96,6 +97,37 @@ def test_parse_port_pair_accepts_bounds():
 def test_parse_port_pair_rejects(text):
     with pytest.raises(ValueError):
         parse_port_pair(text)
+
+
+def test_parse_local_forward_defaults_loopback_and_accepts_host():
+    assert parse_local_forward("40013:40013") == (40013, "127.0.0.1", 40013)
+    assert parse_local_forward("1:65535") == (1, "127.0.0.1", 65535)
+    assert parse_local_forward("40013:81.12.47.113:40013") == (40013, "81.12.47.113", 40013)
+    assert parse_local_forward("40013:db.internal:27017") == (40013, "db.internal", 27017)
+    assert parse_local_forward("40013:localhost:80") == (40013, "localhost", 80)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "0:1",
+        "1:0",
+        "65536:1",
+        "40013:81.12.47.113:0",
+        "40013:81.12.47.113:65536",
+        "40013:999.1.1.1:40013",
+        "40013:81.12.47:40013",
+        "40013::40013",
+        "40013:81.12.47.113:40013:9",
+        "40013:bad_host:40013",
+        "foo",
+        "",
+        "40013:81.12.47.113: 40013",
+    ],
+)
+def test_parse_local_forward_rejects(text):
+    with pytest.raises(ValueError):
+        parse_local_forward(text)
 
 
 def test_frame_round_trip_keeps_nul_and_partial_tail():
@@ -171,6 +203,12 @@ def test_tunnel_table_kill_render_and_stable_ids():
     table.mark_fail(2, "busy")
     assert "fail: busy" in table.render()
     assert table.kill("2") == "no tunnel 2"
+
+
+def test_tunnel_table_renders_remote_dial_host():
+    table = TunnelTable()
+    table.add("L", 40013, 40013, "81.12.47.113")
+    assert "1  L  laptop 127.0.0.1:40013  dial vm 81.12.47.113:40013  wait" in table.render()
 
 
 def test_bootstrap_waits_then_sends_one_chunk():
@@ -276,6 +314,22 @@ def test_listen_sets_reuseaddr_and_dial_sets_nodelay():
             sock.close()
     finally:
         listener.close()
+
+
+def test_link_local_forward_binds_dial_host():
+    port = _free_port()
+    link = Link([("L", port, 40013, "81.12.47.113")])
+    try:
+        assert link.start() == 0
+        frames, _rest = decode_frames(link.take_send())
+        assert frames[0][0] == BIND
+        payload = frames[0][1]
+        assert struct.unpack(">IBH", payload[:7]) == (1, KIND_L, 40013)
+        (size,) = struct.unpack(">H", payload[7:9])
+        assert payload[9 : 9 + size] == b"81.12.47.113"
+        assert "dial vm 81.12.47.113:40013" in link.table.render()
+    finally:
+        link.kill("1")
 
 
 def test_link_local_forward_and_kill():
@@ -398,6 +452,48 @@ def test_remote_dials_and_drop_closes_listen():
         thread.join(1)
 
 
+def test_remote_dials_host_from_bind():
+    left, right = socket.socketpair()
+    namespace = {"__name__": "titan_remote"}
+    exec(REMOTE_SOURCE, namespace)
+    seen = []
+    real_connect = namespace["socket"].create_connection
+
+    def capture(address, timeout=None):
+        seen.append(address)
+        _host, port = address
+        return real_connect(("127.0.0.1", port), timeout)
+
+    namespace["socket"].create_connection = capture
+    fwd = namespace["Fwd"](right.recv, right.sendall, right.fileno(), lambda: None)
+    thread = threading.Thread(target=fwd.serve, daemon=True)
+    thread.start()
+    service = socket.socket()
+    service.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    service.bind(("127.0.0.1", 0))
+    service.listen(1)
+    service.settimeout(2)
+    port = service.getsockname()[1]
+    host = b"192.0.2.1"
+    payload = struct.pack(">IBH", 1, KIND_L, port) + struct.pack(">H", len(host)) + host
+    try:
+        assert _read_frames(left, 1)[0] == (HELLO, b"1")
+        _send_frame(left, BIND, payload)
+        assert _read_frames(left, 1)[0][0] == BOUND
+        _send_frame(left, OPEN, struct.pack(">II", 1, 1))
+        assert _read_frames(left, 1)[0][0] == OPENED
+        conn, _addr = service.accept()
+        conn.close()
+        assert seen == [("192.0.2.1", port)]
+    finally:
+        namespace["socket"].create_connection = real_connect
+        fwd.alive = False
+        left.close()
+        right.close()
+        service.close()
+        thread.join(1)
+
+
 def _rows():
     return [
         Access("id-1", "web", "vm-a", "10.0.0.1"),
@@ -421,10 +517,33 @@ def test_ssh_flags_call_forward_in_order(monkeypatch):
     monkeypatch.setattr("titan.cli.run_shell", lambda *args: (_ for _ in ()).throw(AssertionError("shell")))
     monkeypatch.setattr("titan.cli.run_forward", fake_run)
     assert main(["ssh", "2", "-L", "27017:27017", "-R", "9000:3000", "-L", "80:8080"]) == 0
-    assert seen["specs"] == [("L", 27017, 27017), ("R", 9000, 3000), ("L", 80, 8080)]
+    assert seen["specs"] == [
+        ("L", 27017, 27017, "127.0.0.1"),
+        ("R", 9000, 3000, "127.0.0.1"),
+        ("L", 80, 8080, "127.0.0.1"),
+    ]
     assert seen["origin"] == "https://titan.efarda.ir"
     assert "/ssh-proxy?" in seen["url"]
     assert seen["credential"] is None
+
+
+def test_ssh_local_forward_keeps_dial_host(monkeypatch):
+    seen = {}
+
+    def fake_run(url, origin, credential, specs):
+        seen["specs"] = specs
+        return 0
+
+    monkeypatch.setattr("titan.cli._load_accesses", _rows)
+    monkeypatch.setattr("titan.cli._token", lambda: "tok")
+    monkeypatch.setattr("titan.cli.credentials_path", lambda: Path("/nope/credentials.json"))
+    monkeypatch.setattr("titan.cli.run_shell", lambda *args: (_ for _ in ()).throw(AssertionError("shell")))
+    monkeypatch.setattr("titan.cli.run_forward", fake_run)
+    assert main(["ssh", "2", "-L", "40013:81.12.47.113:40013", "-L", "27017:27017"]) == 0
+    assert seen["specs"] == [
+        ("L", 40013, 40013, "81.12.47.113"),
+        ("L", 27017, 27017, "127.0.0.1"),
+    ]
 
 
 def test_ssh_without_ports_still_opens_shell(monkeypatch):

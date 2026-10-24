@@ -52,6 +52,47 @@ def parse_port_pair(text: str) -> Tuple[int, int]:
     return ports
 
 
+def _port_token(text: str) -> Optional[int]:
+    if not text.isdigit():
+        return None
+    port = int(text)
+    if port < 1 or port > 65535:
+        return None
+    return port
+
+
+def _host_ok(host: str) -> bool:
+    if not host or len(host) > 253:
+        return False
+    labels = host.split(".")
+    if all(label.isdigit() for label in labels):
+        if len(labels) != 4:
+            return False
+        return all(int(label) <= 255 for label in labels)
+    for label in labels:
+        if not label or len(label) > 63:
+            return False
+        if label[0] == "-" or label[-1] == "-":
+            return False
+        if any(not (ch.isalnum() or ch == "-") for ch in label):
+            return False
+    return True
+
+
+def parse_local_forward(text: str) -> Tuple[int, str, int]:
+    parts = text.split(":")
+    if len(parts) == 2:
+        listen, dial = parse_port_pair(text)
+        return listen, "127.0.0.1", dial
+    if len(parts) != 3 or not _host_ok(parts[1]):
+        raise ValueError(text)
+    listen = _port_token(parts[0])
+    dial = _port_token(parts[2])
+    if listen is None or dial is None:
+        raise ValueError(text)
+    return listen, parts[1], dial
+
+
 def encode_frame(frame_type: int, payload: bytes) -> bytes:
     body = bytes((frame_type,)) + payload
     if len(body) > MAX_FRAME:
@@ -189,11 +230,14 @@ def _unpack_err(payload: bytes) -> Tuple[int, str]:
 
 
 class Tunnel(object):
-    def __init__(self, tid: int, kind: str, listen_port: int, dial_port: int) -> None:
+    def __init__(
+        self, tid: int, kind: str, listen_port: int, dial_port: int, dial_host: str = "127.0.0.1"
+    ) -> None:
         self.id = tid
         self.kind = kind
         self.listen_port = listen_port
         self.dial_port = dial_port
+        self.dial_host = dial_host
         self.status = "wait"
         self.reason = ""
         self.conns = 0
@@ -203,8 +247,10 @@ class TunnelTable(object):
     def __init__(self) -> None:
         self.rows: List[Tunnel] = []
 
-    def add(self, kind: str, listen_port: int, dial_port: int) -> Tunnel:
-        row = Tunnel(len(self.rows) + 1, kind, listen_port, dial_port)
+    def add(
+        self, kind: str, listen_port: int, dial_port: int, dial_host: str = "127.0.0.1"
+    ) -> Tunnel:
+        row = Tunnel(len(self.rows) + 1, kind, listen_port, dial_port, dial_host)
         self.rows.append(row)
         return row
 
@@ -268,13 +314,14 @@ class TunnelTable(object):
             else:
                 status = row.status
             lines.append(
-                "%d  %s  %s 127.0.0.1:%d  dial %s 127.0.0.1:%d  %s"
+                "%d  %s  %s 127.0.0.1:%d  dial %s %s:%d  %s"
                 % (
                     row.id,
                     row.kind,
                     listen_side,
                     row.listen_port,
                     dial_side,
+                    row.dial_host,
                     row.dial_port,
                     status,
                 )
@@ -413,10 +460,12 @@ def _dial(port: int) -> socket.socket:
 
 
 class Link(object):
-    def __init__(self, specs: List[Tuple[str, int, int]]) -> None:
+    def __init__(self, specs: List[tuple]) -> None:
         self.table = TunnelTable()
-        for kind, listen_port, dial_port in specs:
-            self.table.add(kind, listen_port, dial_port)
+        for spec in specs:
+            kind, listen_port, dial_port = spec[0], spec[1], spec[2]
+            dial_host = spec[3] if len(spec) > 3 else "127.0.0.1"
+            self.table.add(kind, listen_port, dial_port, dial_host)
         self.listeners = {}
         self.chans = {}
         self.next_odd = 1
@@ -431,7 +480,11 @@ class Link(object):
                 except OSError as exc:
                     self.table.mark_fail(row.id, str(exc))
                     continue
-                self._send(BIND, struct.pack(">IBH", row.id, KIND_L, row.dial_port))
+                payload = struct.pack(">IBH", row.id, KIND_L, row.dial_port)
+                if row.dial_host != "127.0.0.1":
+                    raw = row.dial_host.encode("utf-8")
+                    payload += struct.pack(">H", len(raw)) + raw
+                self._send(BIND, payload)
             else:
                 self._send(BIND, struct.pack(">IBH", row.id, KIND_R, row.listen_port))
         return 1 if self.all_failed() else 0
@@ -806,7 +859,13 @@ class Fwd(object):
     def frame(self, ftype, payload):
         if ftype == BIND and len(payload) >= 7:
             tid, kind, port = struct.unpack(">IBH", payload[:7])
-            self.bind(tid, kind, port)
+            host = "127.0.0.1"
+            if len(payload) >= 9:
+                (n,) = struct.unpack(">H", payload[7:9])
+                if len(payload) < 9 + n:
+                    return
+                host = payload[9 : 9 + n].decode("utf-8")
+            self.bind(tid, kind, port, host)
         elif ftype == OPEN and len(payload) >= 8:
             chan, tid = struct.unpack(">II", payload[:8])
             self.open(chan, tid)
@@ -823,12 +882,12 @@ class Fwd(object):
             (tid,) = struct.unpack(">I", payload[:4])
             self.drop(tid)
 
-    def bind(self, tid, kind, port):
+    def bind(self, tid, kind, port, host="127.0.0.1"):
         if tid in self.dials or tid in self.listeners:
             self.send(BIND_FAIL, pack_err(tid, "duplicate tunnel"))
             return
         if kind == KIND_L:
-            self.dials[tid] = port
+            self.dials[tid] = (host, port)
             self.send(BOUND, struct.pack(">I", tid))
             return
         if kind != KIND_R:
@@ -850,12 +909,13 @@ class Fwd(object):
         if chan in self.chans:
             self.send(OPEN_FAIL, pack_err(chan, "channel in use"))
             return
-        port = self.dials.get(tid)
-        if port is None:
+        target = self.dials.get(tid)
+        if target is None:
             self.send(OPEN_FAIL, pack_err(chan, "unknown tunnel"))
             return
+        host, port = target
         try:
-            sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+            sock = socket.create_connection((host, port), timeout=10)
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             sock.setblocking(False)
         except OSError as exc:

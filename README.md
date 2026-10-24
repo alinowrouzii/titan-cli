@@ -84,17 +84,19 @@ The VM is still not reachable as an SSH server. These flags ride the same websoc
 
 ```bash
 titan ssh 7 -L 27017:27017 -R 9000:3000
+titan ssh 7 -L 40013:81.12.47.113:40013
 ```
 
 | Flag | What listens | What gets dialed |
 | --- | --- | --- |
 | `-L LOCAL:REMOTE` | your laptop `127.0.0.1:LOCAL` | the VM `127.0.0.1:REMOTE` |
+| `-L LOCAL:HOST:REMOTE` | your laptop `127.0.0.1:LOCAL` | `HOST:REMOTE` from the VM |
 | `-R REMOTE:LOCAL` | the VM `127.0.0.1:REMOTE` | your laptop `127.0.0.1:LOCAL` |
 
-Repeat either flag. The list is numbered in the order you wrote the flags. Both ends stay on `127.0.0.1`.
+`HOST` is an IPv4 address or a hostname. The VM resolves the name. Repeat either flag. The list is numbered in the order you wrote the flags. Listeners stay on `127.0.0.1`.
 
 ```text
-1  L  laptop 127.0.0.1:27017  dial vm 127.0.0.1:27017  conns 0
+1  L  laptop 127.0.0.1:40013  dial vm 81.12.47.113:40013  conns 0
 2  R  vm 127.0.0.1:9000  dial laptop 127.0.0.1:3000  conns 1
 type a number to kill that tunnel
 ```

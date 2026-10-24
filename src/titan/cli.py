@@ -43,7 +43,7 @@ from titan.pam import (
 from titan.migration import accounts_in_text, choose_account, secret_base32
 from titan.qrscan import read_qr_payload
 from titan.totp import load_totp, save_totp, totp_candidates
-from titan.forward import parse_port_pair, run_forward
+from titan.forward import parse_local_forward, parse_port_pair, run_forward
 from titan.shell import run_shell, ssh_proxy_url, terminal_size
 
 PAGE = 100
@@ -105,7 +105,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         dest="forwards",
         default=None,
         metavar="LOCAL:REMOTE",
-        help="listen on the laptop, dial that port on the VM",
+        help="listen on the laptop, dial the VM. LOCAL:HOST:REMOTE dials that host",
     )
     ssh.add_argument(
         "-R",
@@ -318,10 +318,14 @@ def _parse_forwards(forwards: Sequence[tuple]):
     specs = []
     for flag, text in forwards:
         try:
-            first, second = parse_port_pair(text)
+            if flag == "-L":
+                listen, host, dial = parse_local_forward(text)
+            else:
+                listen, dial = parse_port_pair(text)
+                host = "127.0.0.1"
         except ValueError:
             return None, "bad forward spec: %s %s" % (flag, text)
-        specs.append(("L" if flag == "-L" else "R", first, second))
+        specs.append(("L" if flag == "-L" else "R", listen, dial, host))
     return specs, ""
 
 
