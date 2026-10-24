@@ -97,7 +97,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ssh.add_argument(
         "target",
         nargs="?",
-        help="server number, access id, or name. omit to pick from the list",
+        help="server number, access id, name, or IP. 105.226 matches a tail. omit to pick from the list",
     )
     ssh.add_argument(
         "-L",

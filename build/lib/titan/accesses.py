@@ -1,4 +1,4 @@
-"""SSH access rows and name matching."""
+"""SSH access rows and name or IP matching."""
 
 from __future__ import annotations
 
@@ -14,6 +14,16 @@ class Access:
     resource_ip: str
 
 
+def _ip_tail(resource_ip: str, arg: str) -> bool:
+    ip_parts = resource_ip.split(".")
+    arg_parts = arg.split(".")
+    if not arg_parts or len(arg_parts) > len(ip_parts):
+        return False
+    if any(not part.isdigit() for part in arg_parts):
+        return False
+    return ip_parts[-len(arg_parts) :] == arg_parts
+
+
 def resolve(accesses: Iterable[Access], arg: str) -> List[Access]:
     folded = arg.casefold()
     hits: List[Access] = []
@@ -22,6 +32,7 @@ def resolve(accesses: Iterable[Access], arg: str) -> List[Access]:
             access.id == arg
             or access.name.casefold() == folded
             or access.resource_name.casefold() == folded
+            or _ip_tail(access.resource_ip, arg)
         ):
             hits.append(access)
     return hits
