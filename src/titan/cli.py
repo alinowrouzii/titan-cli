@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from titan.accesses import Access, format_row, resolve
+from titan.complete import bash_script, candidates
 from titan.auth import AuthError, delete_paths, load_session, pick_efnet, save_session
 from titan.config import INSTALL_HINT, base_url, credentials_path, session_path, totp_path
 from titan.credentials import (
@@ -93,6 +94,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     cred_sub.add_parser("default", help="Save one VM username and password for every server")
     cred_sub.add_parser("delete", help="Delete saved VM passwords")
+    comp = sub.add_parser("completion", help="Shell completion")
+    comp_sub = comp.add_subparsers(dest="completion_cmd", required=True)
+    comp_sub.add_parser("bash", help="Print the bash completion script")
+    cand = comp_sub.add_parser("candidates")
+    cand.add_argument("payload", nargs=argparse.REMAINDER)
     ssh = sub.add_parser("ssh")
     ssh.add_argument(
         "target",
@@ -132,6 +138,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if args.cred_cmd == "delete":
                 return cmd_cred_delete()
             return cmd_cred_set()
+        if args.cmd == "completion":
+            if args.completion_cmd == "bash":
+                return cmd_completion_bash()
+            return cmd_completion_candidates(args.payload)
         return cmd_ssh(args.target, args.forwards or [])
     except SessionExpired as exc:
         print(exc, file=sys.stderr)
@@ -266,6 +276,25 @@ def _secret_from_qr(path: str, account: Optional[str]) -> tuple:
     if account:
         raise AuthError("--account is for a Google Authenticator export QR")
     return text, ""
+
+
+def cmd_completion_bash() -> int:
+    print(bash_script(), end="")
+    return 0
+
+
+def cmd_completion_candidates(payload: Sequence[str]) -> int:
+    try:
+        args = list(payload)
+        if args and args[0] == "--":
+            args = args[1:]
+        cword = int(args[0])
+        words = args[1:]
+        for line in candidates(words, cword, _load_accesses):
+            print(line)
+    except Exception:
+        return 0
+    return 0
 
 
 def cmd_ls() -> int:

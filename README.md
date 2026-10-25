@@ -70,6 +70,14 @@ titan ssh 105.226
 
 `ls` prints resource name, access name, IP, and access id.
 
+Bash can complete those words. Add this to `~/.bashrc`, then open a new shell:
+
+```bash
+eval "$(titan completion bash)"
+```
+
+`titan ssh` then offers the access name, the resource name, and the full IP. `fin` offers `Finnotech-DB`. A short IP tail is not offered. `-L` and `-R` complete as flags. No session means Tab shows nothing.
+
 `ssh` matches the access id exactly, or the access name or resource name with case ignored. It also matches the IP, or a tail of its octets: `105.226` matches `192.168.105.226`. `5.226` does not, and `192.168` does not. Zero matches stops. More than one match prints the rows and does not connect. Pass the access id when two rows share a name or an IP tail.
 
 The PAM proxy then asks for the VM username and password. If that server has a saved password, or a default password is set, titan types them when it sees `login:` / `username:` and then `Password:`. Otherwise you type them. Ctrl-C goes to that remote shell. Leave with `exit`. If the prompt never returns, stop the process from another terminal:
