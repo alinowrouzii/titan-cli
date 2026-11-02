@@ -30,6 +30,7 @@ from titan.forward import (
     decode_frames,
     encode_frame,
     REMOTE_SOURCE,
+    last_line_is_prompt,
     load_remote,
     parse_local_forward,
     parse_port_pair,
@@ -209,6 +210,67 @@ def test_tunnel_table_renders_remote_dial_host():
     table = TunnelTable()
     table.add("L", 40013, 40013, "81.12.47.113")
     assert "1  L  laptop 127.0.0.1:40013  dial vm 81.12.47.113:40013  wait" in table.render()
+
+
+def test_prompt_accepts_zsh_angle():
+    assert last_line_is_prompt("~/src \u276f ")
+    assert last_line_is_prompt("~/src \u276f")
+
+
+def test_saved_login_starts_when_shell_prompt_is_already_there():
+    clock = Clock()
+    boot = _boot(clock, credential={"username": "root", "password": "pw"})
+    boot.push(b"Alis-MacBook-Pro:~ redhat$ ")
+    clock.advance(0.3)
+    boot.poll()
+    sent = boot.take()
+    assert b"TITAN_OK" in sent
+    assert b"root\r" not in sent
+    assert boot.phase == "ack"
+    assert boot.feeder.done
+
+
+def test_saved_login_starts_on_zsh_prompt():
+    clock = Clock()
+    boot = _boot(clock, credential={"username": "root", "password": "pw"})
+    boot.push("~/src \u276f ".encode())
+    clock.advance(0.3)
+    boot.poll()
+    assert b"TITAN_OK" in boot.take()
+    assert boot.phase == "ack"
+
+
+def test_saved_login_still_types_a_real_password_question():
+    clock = Clock()
+    boot = _boot(clock, credential={"username": "root", "password": "pw"})
+    boot.push(b"login: ")
+    assert boot.take() == b"root\r"
+    boot.push(b"Password: ")
+    assert boot.take() == b"pw\r"
+    clock.advance(0.3)
+    boot.poll()
+    assert boot.take() == b""
+    assert boot.phase == "prompt"
+
+
+def test_saved_login_stops_autofill_after_15s():
+    clock = Clock()
+    boot = _boot(clock, credential={"username": "root", "password": "pw"})
+    boot.push(b"Last login: Mon\r\n")
+    clock.advance(15)
+    boot.poll()
+    assert boot.feeder.done
+    assert boot.phase == "prompt"
+    assert boot.take() == b""
+
+
+def test_user_typed_stops_autofill():
+    clock = Clock()
+    boot = _boot(clock, credential={"username": "root", "password": "pw"})
+    boot.user_typed()
+    assert boot.feeder.done
+    assert boot.phase == "prompt"
+    assert boot.take() == b""
 
 
 def test_bootstrap_waits_then_sends_one_chunk():

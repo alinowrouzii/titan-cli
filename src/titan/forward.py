@@ -18,7 +18,7 @@ import tty
 import uuid
 from typing import Callable, List, Optional, Tuple
 
-from titan.shell import LoginFeeder, format_disconnect
+from titan.shell import LoginFeeder, _AUTOFILL_SECONDS, format_disconnect
 
 HELLO = 1
 BIND = 2
@@ -39,7 +39,7 @@ HIGH = 1024 * 1024
 HELLO_FRAME = bytes.fromhex("000000020131")
 
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-_PROMPT = re.compile(r"^[^\r\n]*[#$%]\s*$")
+_PROMPT = re.compile(r"^[^\r\n]*[#$%❯]\s*$")
 
 
 def parse_port_pair(text: str) -> Tuple[int, int]:
@@ -387,8 +387,23 @@ class Bootstrap(object):
                 return
         self._advance()
 
+    def user_typed(self) -> None:
+        if self.phase != "login":
+            return
+        if self.feeder is not None and not self.feeder.done:
+            self.feeder.cancel()
+        self.phase = "prompt"
+
     def poll(self) -> None:
         now = self.clock()
+        if (
+            self.phase == "login"
+            and self.feeder is not None
+            and not self.feeder.done
+            and now - self.started >= _AUTOFILL_SECONDS
+        ):
+            self.feeder.cancel()
+            self.phase = "prompt"
         if self.phase in ("login", "prompt") and now - self.started >= 60:
             raise RuntimeError("no shell prompt")
         if (
@@ -414,6 +429,13 @@ class Bootstrap(object):
     def _advance(self) -> None:
         now = self.clock()
         quiet = now - self.last_change >= 0.3
+        if self.phase == "login":
+            if quiet and last_line_is_prompt(self.visible):
+                if self.feeder is not None and not self.feeder.done:
+                    self.feeder.cancel()
+                self.phase = "prompt"
+                self._send_chunk()
+            return
         if self.phase == "prompt":
             if quiet and last_line_is_prompt(self.visible):
                 self._send_chunk()
@@ -1081,13 +1103,15 @@ def _fail_text(exc: BaseException) -> str:
     return text[0] if text else exc.__class__.__name__
 
 
-def _mirror_stdin(fd: int, ws) -> None:
+def _mirror_stdin(fd: int, ws) -> bool:
     ready, _, _ = select.select([fd], [], [], 0)
     if fd not in ready:
-        return
+        return False
     data = os.read(fd, 1024)
-    if data:
-        _ws_send(ws, data)
+    if not data:
+        return False
+    _ws_send(ws, data)
+    return True
 
 
 def _take_lines(fd: int, buf: bytes) -> Tuple[bytes, List[str]]:
@@ -1175,9 +1199,12 @@ def _session(ws, fd: int, old, credential: Optional[dict], specs) -> int:
                     _send_wire(ws, link.take_send())
                 return 0
             if link is None:
-                show = credential is None and boot.phase in ("login", "prompt")
-                if show:
-                    _mirror_stdin(fd, ws)
+                manual = credential is None or boot.phase == "prompt"
+                if manual and not raw:
+                    tty.setraw(fd)
+                    raw = True
+                if manual and _mirror_stdin(fd, ws):
+                    boot.user_typed()
                 try:
                     item = incoming.get(timeout=0.1)
                 except queue.Empty:
@@ -1186,7 +1213,7 @@ def _session(ws, fd: int, old, credential: Optional[dict], specs) -> int:
                     raise RuntimeError(_fail_text(item))
                 if item:
                     data = _as_bytes(item)
-                    if show:
+                    if manual:
                         os.write(sys.stdout.fileno(), data)
                     boot.push(data)
                 else:

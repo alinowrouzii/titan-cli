@@ -111,7 +111,7 @@ titan ssh 7 -L 40013:81.12.47.113:40013
 type a number to kill that tunnel
 ```
 
-Type a number and Enter to close that listen and its connections. Ctrl-C closes every tunnel and returns the terminal. A saved VM password is typed for you. Without one, you log in at the VM prompt, then the list replaces the shell.
+Type a number and Enter to close that listen and its connections. Ctrl-C closes every tunnel and returns the terminal. A saved VM password is typed for you. A shell prompt that ends in `$`, `#`, `%`, or `❯` starts the forwarder even when the login questions never appeared. After 15 seconds the password typing stops, the VM is shown, and the keyboard works. Without a saved password, you log in at the VM prompt, then the list replaces the shell.
 
 ## TOTP secret
 
