@@ -70,6 +70,7 @@ def test_titan_tab_lists_commands_without_listing_servers():
         "ssh",
         "totp",
         "cred",
+        "tunnel",
     ]
 
 

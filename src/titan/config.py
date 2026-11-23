@@ -30,3 +30,7 @@ def totp_path() -> Path:
 
 def credentials_path() -> Path:
     return Path.home() / ".config" / "titan" / "credentials.json"
+
+
+def tunnels_path() -> Path:
+    return Path.home() / ".config" / "titan" / "tunnels.json"

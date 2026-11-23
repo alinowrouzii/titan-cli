@@ -1,4 +1,4 @@
-"""titan login, titan ls, titan ssh, titan cred."""
+"""titan login, titan ls, titan ssh, titan cred, titan tunnel."""
 
 from __future__ import annotations
 
@@ -13,7 +13,14 @@ from typing import List, Optional, Sequence
 from titan.accesses import Access, format_row, resolve
 from titan.complete import bash_script, candidates
 from titan.auth import AuthError, delete_paths, load_session, pick_efnet, save_session
-from titan.config import INSTALL_HINT, base_url, credentials_path, session_path, totp_path
+from titan.config import (
+    INSTALL_HINT,
+    base_url,
+    credentials_path,
+    session_path,
+    totp_path,
+    tunnels_path,
+)
 from titan.credentials import (
     apply_picks,
     credential_for,
@@ -46,6 +53,16 @@ from titan.qrscan import read_qr_payload
 from titan.totp import load_totp, save_totp, totp_candidates
 from titan.forward import parse_local_forward, parse_port_pair, run_forward
 from titan.shell import run_shell, ssh_proxy_url, terminal_size
+from titan.tunnels import (
+    delete_tunnel,
+    format_list,
+    format_show,
+    get_tunnel,
+    load_tunnels,
+    save_tunnels,
+    set_tunnel,
+    to_cli_forwards,
+)
 
 PAGE = 100
 
@@ -99,6 +116,36 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     comp_sub.add_parser("bash", help="Print the bash completion script")
     cand = comp_sub.add_parser("candidates")
     cand.add_argument("payload", nargs=argparse.REMAINDER)
+    tunnel = sub.add_parser("tunnel", help="Saved named port forwards")
+    tunnel_sub = tunnel.add_subparsers(dest="tunnel_cmd", required=True)
+    tunnel_run = tunnel_sub.add_parser("run", help="Open a saved tunnel")
+    tunnel_run.add_argument("name", help="tunnel alias")
+    tunnel_save = tunnel_sub.add_parser("save", help="Save a named tunnel")
+    tunnel_save.add_argument("name", help="tunnel alias")
+    tunnel_save.add_argument(
+        "target",
+        help="server number, access id, name, or IP (same as titan ssh)",
+    )
+    tunnel_save.add_argument(
+        "-L",
+        action=_RememberForward,
+        dest="forwards",
+        default=None,
+        metavar="LOCAL:REMOTE",
+        help="listen on the laptop, dial the VM. LOCAL:HOST:REMOTE dials that host",
+    )
+    tunnel_save.add_argument(
+        "-R",
+        action=_RememberForward,
+        dest="forwards",
+        metavar="REMOTE:LOCAL",
+        help="listen on the VM, dial that port on the laptop",
+    )
+    tunnel_sub.add_parser("ls", help="List saved tunnels")
+    tunnel_show = tunnel_sub.add_parser("show", help="Show one saved tunnel")
+    tunnel_show.add_argument("name", help="tunnel alias")
+    tunnel_rm = tunnel_sub.add_parser("rm", help="Delete a saved tunnel")
+    tunnel_rm.add_argument("name", help="tunnel alias")
     ssh = sub.add_parser("ssh")
     ssh.add_argument(
         "target",
@@ -142,6 +189,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if args.completion_cmd == "bash":
                 return cmd_completion_bash()
             return cmd_completion_candidates(args.payload)
+        if args.cmd == "tunnel":
+            return cmd_tunnel(args)
         return cmd_ssh(args.target, args.forwards or [])
     except SessionExpired as exc:
         print(exc, file=sys.stderr)
@@ -302,6 +351,38 @@ def cmd_ls() -> int:
     print("resource\taccess\tip\tid")
     for access in rows:
         print(format_row(access))
+    return 0
+
+
+def cmd_tunnel(args: argparse.Namespace) -> int:
+    if args.tunnel_cmd == "ls":
+        print(format_list(load_tunnels(tunnels_path())))
+        return 0
+    if args.tunnel_cmd == "show":
+        store = load_tunnels(tunnels_path())
+        print(format_show(args.name, get_tunnel(store, args.name)))
+        return 0
+    if args.tunnel_cmd == "rm":
+        path = tunnels_path()
+        store = delete_tunnel(load_tunnels(path), args.name)
+        save_tunnels(path, store)
+        print("saved %s" % path)
+        return 0
+    if args.tunnel_cmd == "run":
+        entry = get_tunnel(load_tunnels(tunnels_path()), args.name)
+        return cmd_ssh(entry["target"], to_cli_forwards(entry))
+    path = tunnels_path()
+    flags = args.forwards or []
+    if not flags:
+        raise RuntimeError("tunnel needs at least one -L or -R")
+    store = set_tunnel(
+        load_tunnels(path),
+        args.name,
+        args.target,
+        [(flag[1:], text) for flag, text in flags],
+    )
+    save_tunnels(path, store)
+    print("saved %s" % path)
     return 0
 
 

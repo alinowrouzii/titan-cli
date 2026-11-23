@@ -5,10 +5,14 @@ from __future__ import annotations
 from typing import Callable, List, Sequence
 
 from titan.accesses import Access
+from titan.config import tunnels_path
+from titan.tunnels import load_tunnels
 
-COMMANDS = ("login", "logout", "ls", "ssh", "totp", "cred")
+COMMANDS = ("login", "logout", "ls", "ssh", "totp", "cred", "tunnel")
 TOTP_COMMANDS = ("set", "delete")
 CRED_COMMANDS = ("set", "default", "delete")
+TUNNEL_COMMANDS = ("run", "save", "ls", "show", "rm")
+TUNNEL_ALIAS_COMMANDS = ("run", "show", "rm")
 SSH_FLAGS = ("-L", "-R")
 
 Loader = Callable[[], Sequence[Access]]
@@ -42,7 +46,26 @@ def candidates(words: Sequence[str], cword: int, load_rows: Loader) -> List[str]
     if command == "cred" and cword == 2:
         current = words[2] if len(words) > 2 else ""
         return _prefix(CRED_COMMANDS, current)
+    if command == "tunnel":
+        return _tunnel_candidates(words, cword)
     return []
+
+
+def _tunnel_candidates(words: Sequence[str], cword: int) -> List[str]:
+    if cword == 2:
+        current = words[2] if len(words) > 2 else ""
+        return _prefix(TUNNEL_COMMANDS, current)
+    if cword != 3:
+        return []
+    sub = words[2] if len(words) > 2 else ""
+    if sub not in TUNNEL_ALIAS_COMMANDS:
+        return []
+    current = words[3] if len(words) > 3 else ""
+    try:
+        names = sorted(load_tunnels(tunnels_path()))
+    except RuntimeError:
+        return []
+    return _prefix(names, current)
 
 
 def _ssh_candidates(words: Sequence[str], cword: int, load_rows: Loader) -> List[str]:

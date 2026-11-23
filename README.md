@@ -113,6 +113,21 @@ type a number to kill that tunnel
 
 Type a number and Enter to close that listen and its connections. Ctrl-C closes every tunnel and returns the terminal. A saved VM password is typed for you. A shell prompt that ends in `$`, `#`, `%`, or `❯` starts the forwarder even when the login questions never appeared. After 15 seconds the password typing stops, the VM is shown, and the keyboard works. Without a saved password, you log in at the VM prompt, then the list replaces the shell.
 
+## Saved tunnels
+
+Name a forward once, run it later. Aliases live in `~/.config/titan/tunnels.json` (CLI or hand-edit).
+
+```bash
+titan tunnel save mongo 112.113 -L 27017:mongo1.db.finnotech.ir:27017
+titan tunnel save mongo 112.113 -L 27017:host:27017 -L 27018:host:27018
+titan tunnel run mongo
+titan tunnel ls
+titan tunnel show mongo
+titan tunnel rm mongo
+```
+
+`run` opens the same foreground tunnel table as `titan ssh … -L …`. Alias names are lowercase letters, digits, `_`, or `-`.
+
 ## TOTP secret
 
 Save the Google Authenticator export QR so later logins do not ask for the code. On the phone: Transfer accounts, Export accounts. Screenshot the QR.
